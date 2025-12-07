@@ -27,23 +27,23 @@ def softmax_kernel(
     # Static persistent scheduling: each block processes multiple rows
     pid = ct.bid(0)
     num_programs = ct.num_blocks(0)
+    offsets = ct.arange(TILE_SIZE, dtype=torch.int32)
 
     for row_idx in range(pid, n_rows, num_programs):
         # Load the row tile using index-based access
-        row = ct.load(input, index=(row_idx, 0), shape=(1, TILE_SIZE), padding_mode=ct.PaddingMode.NEG_INF)
-
+        row = ct.gather(input, (row_idx, offsets), check_bounds=True, padding_value=-np.inf)
         # Convert to float32 for computation
         row = ct.astype(row, torch.float32)
 
         # Subtract maximum for numerical stability
-        row_max = ct.max(row, 1, keepdims=True)
+        row_max = ct.max(row, 0, keepdims=True)
         row_minus_max = ct.sub(row, row_max)
 
         # Compute exponential
         numerator = ct.exp(row_minus_max)
 
         # Compute sum for normalization
-        denominator = ct.sum(numerator, 1, keepdims=True)
+        denominator = ct.sum(numerator, 0, keepdims=True)
 
         # Final softmax computation
         softmax_output = ct.truediv(numerator, denominator)
@@ -52,7 +52,7 @@ def softmax_kernel(
         softmax_output = ct.astype(softmax_output, input.dtype)
 
         # Store result using index-based access
-        ct.store(output, index=(row_idx, 0), tile=softmax_output)
+        ct.scatter(output, (row_idx, offsets), softmax_output, check_bounds=True)
 
 # TMA version with static persistent scheduling
 @ct.kernel(occupancy=2)
