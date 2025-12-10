@@ -286,6 +286,49 @@ def fmha_decode(
 
 
 @dispatch(
+    "fmha_decode_paged",
+)
+def fmha_decode_paged(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    sm_scale: Optional[float] = None,
+    max_seq_len: Optional[int] = None,
+    **kwargs: Any,
+):
+    """
+    Paged KV cache attention decoding for a single-token query.
+
+    This variant supports paged/block KV cache where K and V are stored
+    in non-contiguous pages and accessed via block_tables indirection.
+
+    Args:
+        q: Query tensor of shape (B, H_q, 1, D)
+        k_cache: Paged key cache of shape (num_pages, H_kv, page_size, D)
+        v_cache: Paged value cache of shape (num_pages, H_kv, page_size, D)
+        block_tables: Page table mapping of shape (B, max_num_blocks)
+            Maps (batch_idx, logical_block_idx) -> physical_page_idx
+        seq_lens: Actual sequence length per batch of shape (B,)
+        sm_scale: Scale factor for attention computation (default: 1/sqrt(D))
+        max_seq_len: Optional max sequence length (for CUDA graph compatibility).
+            If not provided, computed from seq_lens.max()
+        **kwargs: Additional arguments for backend-specific configurations
+
+    Returns:
+        Output tensor of shape (B, H_q, 1, D)
+
+    Note:
+        Current implementation requires page_size == TILE_N (typically 128).
+        This simplifies the kernel by ensuring each tile maps to exactly one page.
+    """
+    raise NotImplementedError(
+        f"fmha_decode_paged is not implemented for {get_current_backend()}"
+    )
+
+
+@dispatch(
     "mla",
 )
 def mla(
