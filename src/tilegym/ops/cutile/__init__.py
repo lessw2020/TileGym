@@ -24,6 +24,7 @@ if is_backend_available("cutile"):
     from . import rms_norm
     from . import rope
     from . import silu_and_mul
+    from . import silu_and_mul_mxfp8
     from . import softmax
     from . import splitk_reduce
     from . import swiglu
@@ -36,6 +37,8 @@ if is_backend_available("cutile"):
     from .rope import apply_rope_base
     from .rope import get_apply_rope_func
     from .silu_and_mul import silu_and_mul
+    from .silu_and_mul_mxfp8 import silu_and_mul_mxfp8
+    from .silu_and_mul_mxfp8 import dequantize_mxfp8
     from .softmax import softmax
     from .splitk_reduce import splitk_reduce
     from .swiglu import get_swiglu
@@ -57,6 +60,8 @@ if is_backend_available("cutile"):
         "get_rms_norm_module",
         "rms_norm",
         "silu_and_mul",
+        "silu_and_mul_mxfp8",
+        "dequantize_mxfp8",
         "softmax",
         "mla_decoding_split_kv",
         "moe",

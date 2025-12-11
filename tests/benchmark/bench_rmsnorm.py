@@ -6,90 +6,99 @@ import torch
 import triton
 
 import tilegym
-from tilegym.backend import is_backend_available, register_impl
+from tilegym.backend import is_backend_available
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-def reference_rms_norm(
-    input: torch.Tensor,
-    normalized_shape: tuple,
-    weight: torch.Tensor,
-    eps: float,
-    bias: torch.Tensor = None,  # Unused - kept for interface compatibility
-    static_persistent: bool = False,  # Unused - kept for interface compatibility
-):
-    """Reference implementation of RMSNorm"""
-    if bias is not None:
-        raise NotImplementedError(
-            "Bias is not supported in standard CuTile RMSNorm"
-        )
-    dims = tuple(i for i in range(-1, -len(normalized_shape) - 1, -1))
-    variance = input.to(torch.float32).pow(2).mean(dims, keepdim=True)
-    input = input * torch.rsqrt(variance + eps)
+def reference_rms_norm(x: torch.Tensor, w_shape: tuple, weight: torch.Tensor, eps: float):
+    """Reference implementation of RMSNorm using PyTorch (eager)"""
+    dims = tuple(i for i in range(-1, -len(w_shape) - 1, -1))
+    variance = x.to(torch.float32).pow(2).mean(dims, keepdim=True)
+    x_norm = x * torch.rsqrt(variance + eps)
 
-    if weight is None:
-        return input
-
-    # Convert into half-precision if necessary
     if weight.dtype in [torch.float16, torch.bfloat16]:
-        input = input.to(weight.dtype)
+        x_norm = x_norm.to(weight.dtype)
 
-    return weight * input
-
-register_impl("rms_norm", "torch")(reference_rms_norm)
+    return weight * x_norm
 
 
-# Available backends with their display names and plot styles
-ALL_BACKENDS = [
-    ("cutile", "CuTile", ("blue", "-"))
+# Compiled version of RMSNorm
+@torch.compile
+def compiled_rms_norm(x: torch.Tensor, w_shape: tuple, weight: torch.Tensor, eps: float):
+    """Compiled RMSNorm using torch.compile"""
+    dims = tuple(i for i in range(-1, -len(w_shape) - 1, -1))
+    variance = x.to(torch.float32).pow(2).mean(dims, keepdim=True)
+    x_norm = x * torch.rsqrt(variance + eps)
+
+    if weight.dtype in [torch.float16, torch.bfloat16]:
+        x_norm = x_norm.to(weight.dtype)
+
+    return weight * x_norm
+
+
+def cutile_persistent_rms_norm(x: torch.Tensor, w_shape: tuple, weight: torch.Tensor, eps: float):
+    """CuTile RMSNorm with static persistent scheduling"""
+    return tilegym.ops.rms_norm(x, w_shape, weight, eps, static_persistent=True, backend="cutile")
+
+
+def cutile_non_persistent_rms_norm(x: torch.Tensor, w_shape: tuple, weight: torch.Tensor, eps: float):
+    """CuTile RMSNorm without static persistent scheduling"""
+    return tilegym.ops.rms_norm(x, w_shape, weight, eps, static_persistent=False, backend="cutile")
+
+
+# Available implementations with their display names and plot styles
+ALL_IMPLEMENTATIONS = [
+    ("cutile_persistent", "CuTile (Persistent)", ("blue", "-"), cutile_persistent_rms_norm)
     if is_backend_available("cutile")
     else None,
-    ("torch", "PyTorch", ("green", "-")),
+    ("cutile_non_persistent", "CuTile (Non-Persistent)", ("orange", "-"), cutile_non_persistent_rms_norm)
+    if is_backend_available("cutile")
+    else None,
+    ("torch_compile", "PyTorch (torch.compile)", ("red", "-"), compiled_rms_norm),
+    ("torch", "PyTorch (Eager)", ("green", "-"), reference_rms_norm),
 ]
 
 
-def get_supported_backends():
-    """Filter backends based on availability"""
-    return [p for p in ALL_BACKENDS if p is not None]
+def get_supported_implementations():
+    """Filter implementations based on availability"""
+    return [p for p in ALL_IMPLEMENTATIONS if p is not None]
 
 
-def create_benchmark_config(dtype, static_persistent=True):
+def create_benchmark_config(dtype, M):
     """Create a benchmark configuration for given parameters"""
-    available_backends = get_supported_backends()
-    if not available_backends:
+    available_impls = get_supported_implementations()
+    if not available_impls:
         return None
 
-    backends, names, styles = zip(*available_backends)
-    dtype_name = str(dtype).split('.')[-1]  # e.g., 'float16' from 'torch.float16'
+    impl_ids, names, styles, _ = zip(*available_impls)
+    dtype_name = str(dtype).split('.')[-1]
 
     return triton.testing.Benchmark(
         x_names=["N"],
-        x_vals=[
-            2**i for i in range(10, 15)
-        ],  # Hidden size from 1024 to 16384
-        line_arg="backend",
-        line_vals=list(backends),
+        x_vals=[2**i for i in range(10, 15)],  # Hidden size from 1024 to 16384
+        line_arg="impl",
+        line_vals=list(impl_ids),
         line_names=list(names),
         styles=list(styles),
         ylabel="GB/s",
-        plot_name=f"rmsnorm-performance-{dtype_name}-persistent-{static_persistent}-GBps",
-        args={
-            "dtype": dtype,
-            "static_persistent": static_persistent,
-            "M": 4096,
-        },  # Fixed batch*seq_len
+        plot_name=f"rms_norm-M{M}-{dtype_name}",
+        args={"dtype": dtype, "M": M},
     )
+
+
+# Build lookup dict for implementations
+IMPL_FUNCS = {p[0]: p[3] for p in get_supported_implementations()}
 
 
 @triton.testing.perf_report(
     [
-        create_benchmark_config(dtype, static_persistent)
+        create_benchmark_config(dtype, M)
         for dtype in [torch.float16, torch.bfloat16]
-        for static_persistent in [True, False]
+        for M in [4096]
     ]
 )
-def bench_rmsnorm(N, backend, dtype, static_persistent, M, device=DEVICE):
+def bench_rmsnorm(N, impl, dtype, M, device=DEVICE):
     eps = 1e-5
 
     # Create input tensors
@@ -101,20 +110,18 @@ def bench_rmsnorm(N, backend, dtype, static_persistent, M, device=DEVICE):
         .mul_(0.5)
         .add_(-2.3)
     )
-    weight = torch.randn(
-        w_shape, dtype=dtype, device=device, requires_grad=False
-    )
+    weight = torch.randn(w_shape, dtype=dtype, device=device, requires_grad=False)
 
-    fn = lambda: tilegym.ops.rms_norm(x, w_shape, weight, eps, static_persistent=static_persistent, backend=backend)
+    fn = IMPL_FUNCS[impl]
+    result_fn = lambda: fn(x, w_shape, weight, eps)
     ref = lambda: reference_rms_norm(x, w_shape, weight, eps)
-    torch.testing.assert_close(fn(), ref(), atol=5e-2, rtol=0.0)
+    torch.testing.assert_close(result_fn(), ref(), atol=5e-2, rtol=0.0)
 
     # Benchmark the function
-    ms = triton.testing.do_bench_cudagraph(fn)
+    ms = triton.testing.do_bench_cudagraph(result_fn)
 
     # Calculate memory bandwidth (GB/s)
     # RMSNorm operation: read input, read weight, write output
-    # Memory access: read x + read weight + write output
     bytes_per_element = x.element_size()
 
     input_bytes = x.numel() * bytes_per_element  # Read input
@@ -130,4 +137,4 @@ def bench_rmsnorm(N, backend, dtype, static_persistent, M, device=DEVICE):
 
 
 if __name__ == "__main__":
-    bench_rmsnorm.run(print_data=True)
+    bench_rmsnorm.run(print_data=True, save_path=".")

@@ -6,74 +6,87 @@ import torch
 import triton
 
 import tilegym
-from tilegym.backend import is_backend_available, register_impl
+from tilegym.backend import is_backend_available
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-def reference_softmax(
-    x: torch.Tensor,
-    use_tma: bool = False,  # Unused - kept for interface compatibility
-    use_online: bool = None,  # Unused - kept for interface compatibility
-):
+def reference_softmax(x: torch.Tensor):
     """Reference implementation of softmax using PyTorch"""
     return torch.nn.functional.softmax(x, dim=-1)
 
-register_impl("softmax", "torch")(reference_softmax)
+
+def cutile_gather_softmax(x: torch.Tensor):
+    """CuTile softmax using ct.gather/ct.scatter"""
+    return tilegym.ops.softmax(x, use_tma=False, backend="cutile")
 
 
-# Available backends with their display names and plot styles
-ALL_BACKENDS = [
-    ("cutile", "CuTile", ("blue", "-"))
+def cutile_tma_softmax(x: torch.Tensor):
+    """CuTile softmax using TMA (ct.load/ct.store)"""
+    return tilegym.ops.softmax(x, use_tma=True, backend="cutile")
+
+
+# Available implementations with their display names and plot styles
+ALL_IMPLEMENTATIONS = [
+    ("cutile_gather", "CuTile (ct.gather)", ("blue", "-"), cutile_gather_softmax)
     if is_backend_available("cutile")
     else None,
-    ("torch", "PyTorch", ("green", "-")),
+    ("cutile_tma", "CuTile (TMA)", ("orange", "-"), cutile_tma_softmax)
+    if is_backend_available("cutile")
+    else None,
+    ("torch", "PyTorch", ("green", "-"), reference_softmax),
 ]
 
 
-def get_supported_backends():
-    """Filter backends based on availability"""
-    return [p for p in ALL_BACKENDS if p is not None]
+def get_supported_implementations():
+    """Filter implementations based on availability"""
+    return [p for p in ALL_IMPLEMENTATIONS if p is not None]
 
 
-def create_benchmark_config(M, use_tma=True):
+def create_benchmark_config(M, dtype):
     """Create a benchmark configuration for given parameters"""
-    available_backends = get_supported_backends()
-    if not available_backends:
+    available_impls = get_supported_implementations()
+    if not available_impls:
         return None
 
-    backends, names, styles = zip(*available_backends)
+    impl_ids, names, styles, _ = zip(*available_impls)
+    dtype_name = str(dtype).split('.')[-1]
 
     return triton.testing.Benchmark(
         x_names=['N'],
         x_vals=[2**i for i in range(10, 15)],
-        line_arg='backend',
-        line_vals=list(backends),
+        line_arg='impl',
+        line_vals=list(impl_ids),
         line_names=list(names),
         styles=list(styles),
         ylabel='GB/s',
-        plot_name=f'softmax-performance-tma-{use_tma}-GBps',
-        args={'M': M, 'use_tma': use_tma},
+        plot_name=f'softmax-M{M}-{dtype_name}',
+        args={'M': M, 'dtype': dtype},
     )
+
+
+# Build lookup dict for implementations
+IMPL_FUNCS = {p[0]: p[3] for p in get_supported_implementations()}
 
 
 @triton.testing.perf_report(
     [
-        create_benchmark_config(M, use_tma)
+        create_benchmark_config(M, dtype)
         for M in [4096]  # Matrix height
-        for use_tma in [True, False]
+        for dtype in [torch.float32, torch.bfloat16]
     ]
 )
-def bench_softmax(M, N, backend, use_tma, dtype=torch.float32, device=DEVICE):
+def bench_softmax(M, N, impl, dtype=torch.float32, device=DEVICE):
     # Create data
-    x = torch.randn(M, N, dtype=dtype, device=device, requires_grad=True)
+    x = torch.randn(M, N, dtype=dtype, device=device)
 
-    fn = lambda: tilegym.ops.softmax(x, use_tma=use_tma, backend=backend)
+    fn = IMPL_FUNCS[impl]
+    result_fn = lambda: fn(x)
     ref = lambda: reference_softmax(x)
-    torch.testing.assert_close(fn(), ref(), atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(result_fn(), ref(), atol=1e-2, rtol=1e-2)
 
     # Benchmark the function
-    ms = triton.testing.do_bench_cudagraph(fn)
+    ms = triton.testing.do_bench_cudagraph(result_fn)
 
     # Calculate memory bandwidth (GB/s)
     # Softmax operation: reads input, writes output
@@ -86,4 +99,5 @@ def bench_softmax(M, N, backend, use_tma, dtype=torch.float32, device=DEVICE):
     return gb_per_s
 
 
-bench_softmax.run(print_data=True)
+if __name__ == "__main__":
+    bench_softmax.run(print_data=True, save_path=".")
