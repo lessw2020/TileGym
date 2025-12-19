@@ -15,8 +15,7 @@ from tilegym.backend.cutile.autotuner import autotune
 from tilegym.logger import get_logger
 logger = get_logger(__name__)
 
-# Type aliases for constants
-ConstInt = ct.Constant[int]
+from .cutile_constants import ConstInt
 
 def swizzle_2d(M, N, TILE_SIZE_M, TILE_SIZE_N, GROUP_SIZE_M):
     # Get the global IDs of the current CUDA block (CTA) in a 1D grid.

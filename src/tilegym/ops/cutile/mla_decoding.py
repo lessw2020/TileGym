@@ -11,9 +11,7 @@ import cuda.tile as ct
 from tilegym.backend import register_impl
 from cuda.tile._numeric_semantics import RoundingMode as RMd
 
-# Type aliases for constants
-ConstInt = ct.Constant[int]
-ConstBool = ct.Constant[bool]
+from .cutile_constants import ConstBool, ConstInt
 
 INV_LOG_2 = 1.0 / math.log(2)
 

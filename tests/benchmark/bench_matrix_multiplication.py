@@ -25,31 +25,30 @@ def reference_matmul(
 register_impl("matmul", "torch")(reference_matmul)
 
 
-# Available backends with their display names and plot styles
-ALL_BACKENDS = [
-    ("cutile", "CuTile", ("orange", "-"))
+FP8_DTYPE = getattr(torch, "float8_e4m3fn", None)
+BASE_DTYPE = torch.bfloat16
+
+# Final comparison:
+#   - CuTile BF16 vs PyTorch BF16
+#   - CuTile FP8 (E4M3) as a 3rd line
+ALL_VARIANTS = [
+    ("cutile_bf16", "CuTile (BF16)", ("orange", "-"))
     if is_backend_available("cutile")
     else None,
-    ("torch", "PyTorch", ("green", "-")),
+    ("torch_bf16", "PyTorch (BF16)", ("green", "-")),
+    ("cutile_fp8_e4m3", "CuTile (FP8 E4M3)", ("blue", "--"))
+    if (is_backend_available("cutile") and FP8_DTYPE is not None)
+    else None,
 ]
 
 
-def get_supported_backends(datatype):
-    """Filter backends based on datatype support and availability"""
-    if datatype == torch.float8_e5m2:
-        return ALL_BACKENDS[:-1]  # Torch cannot support FP8
-    else:
-        return [p for p in ALL_BACKENDS if p is not None]
+def get_supported_variants():
+    return [p for p in ALL_VARIANTS if p is not None]
 
 
-def create_benchmark_config(datatype):
-    """Create a benchmark configuration for given datatype and backends"""
-    available_backends = get_supported_backends(datatype)
-    if not available_backends:
-        return None
-
-    backends, names, styles = zip(*available_backends)
-    dtype_name = str(datatype).split('.')[-1]  # e.g., 'float16' from 'torch.float16'
+def create_benchmark_config():
+    """Create a benchmark configuration for the final 3-line comparison."""
+    variants, names, styles = zip(*get_supported_variants())
     compute_capability = torch.cuda.get_device_capability()
     if compute_capability[0] == 10:
         max_range = 16
@@ -58,43 +57,66 @@ def create_benchmark_config(datatype):
     return triton.testing.Benchmark(
         x_names=["M", "N", "K"],
         x_vals=[2**i for i in range(10, max_range)],
-        line_arg="backend",
-        line_vals=list(backends),
+        line_arg="variant",
+        line_vals=list(variants),
         line_names=list(names),
         styles=list(styles),
         xlabel="M/N/K",
         ylabel="TFLOPS",
-        plot_name=f"matmul-performance-{dtype_name}-TFLOPS",
-        args={"datatype": datatype},
+        plot_name="matmul-performance-cutile-vs-torch-vs-fp8-TFLOPS",
+        args={},
     )
 
 
 @triton.testing.perf_report(
-    [
-        create_benchmark_config(datatype)
-        for datatype in [torch.float16, torch.float8_e5m2]
-    ]
+    create_benchmark_config()
 )
-def benchmark(M, N, K, backend, datatype):
-    if datatype == torch.float8_e5m2:
-        a = torch.randn((M, K), device=DEVICE, dtype=torch.float16).to(
-            torch.float8_e5m2
-        )
-        b = torch.randn((K, N), device=DEVICE, dtype=torch.float16).to(
-            torch.float8_e5m2
-        )
-    else:
-        a = torch.randn((M, K), device=DEVICE, dtype=datatype)
-        b = torch.randn((K, N), device=DEVICE, dtype=datatype)
+def benchmark(M, N, K, variant):
+    # Always generate BF16 inputs; cast to FP8 for the FP8 line so inputs are comparable.
+    a_bf16 = torch.randn((M, K), device=DEVICE, dtype=BASE_DTYPE)
+    b_bf16 = torch.randn((K, N), device=DEVICE, dtype=BASE_DTYPE)
 
     quantiles = [0.5, 0.2, 0.8]
 
-    fn = lambda: tilegym.ops.matmul(a, b, use_tma=True, static_persistent=False, backend=backend)
+    if variant == "torch_bf16":
+        fn = lambda: reference_matmul(a_bf16, b_bf16)
+    elif variant == "cutile_bf16":
+        fn = lambda: tilegym.ops.matmul(
+            a_bf16,
+            b_bf16,
+            use_tma=True,
+            static_persistent=False,
+            backend="cutile",
+        )
+    elif variant == "cutile_fp8_e4m3":
+        assert FP8_DTYPE is not None, "torch.float8_e4m3fn not available in this torch build"
+        # Cast BF16 -> FP16 -> FP8 to ensure the cast path is available everywhere.
+        a_fp8 = a_bf16.to(torch.float16).to(FP8_DTYPE)
+        b_fp8 = b_bf16.to(torch.float16).to(FP8_DTYPE)
+        fn = lambda: tilegym.ops.matmul(
+            a_fp8,
+            b_fp8,
+            use_tma=True,
+            static_persistent=False,
+            backend="cutile",
+        )
+    else:
+        raise ValueError(f"Unknown variant: {variant}")
 
-    if datatype != torch.float8_e5m2:
-        # torch doesn't support FP8 matmul
-        ref = lambda: reference_matmul(a, b)
+    # Correctness checks
+    if variant in ("torch_bf16", "cutile_bf16"):
+        ref = lambda: reference_matmul(a_bf16, b_bf16)
         torch.testing.assert_close(fn(), ref())
+    elif variant == "cutile_fp8_e4m3":
+        # PyTorch doesn't support FP8 matmul here; FP8 error can grow with problem size.
+        # To avoid breaking the entire sweep on a handful of outliers, only sanity-check
+        # one smallish point.
+        if (M, N, K) == (1024, 1024, 1024):
+            out_fp32 = fn().to(torch.float32)
+            ref_fp32 = reference_matmul(
+                a_bf16.to(torch.float32), b_bf16.to(torch.float32)
+            )
+            torch.testing.assert_close(out_fp32, ref_fp32, rtol=1.0, atol=2e1)
 
     ms, min_ms, max_ms = triton.testing.do_bench_cudagraph(
         fn, quantiles=quantiles

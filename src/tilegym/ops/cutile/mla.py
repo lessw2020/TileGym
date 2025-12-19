@@ -10,8 +10,7 @@ import torch
 from cuda.tile._numeric_semantics import RoundingMode as RMd
 
 from tilegym.backend import register_impl
-# Type aliases for constants
-ConstInt = ct.Constant[int]
+from .cutile_constants import ConstInt
 
 INV_LOG_2 = 1.0 / math.log(2)
 

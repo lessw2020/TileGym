@@ -4,7 +4,7 @@ import torch
 from cuda.tile._numeric_semantics import RoundingMode as RMd
 
 
-ConstInt = ct.Constant[int]
+from .cutile_constants import ConstInt
 
 @ct.kernel
 def silu_mul_kernel(

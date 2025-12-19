@@ -21,8 +21,7 @@ import torch
 from tilegym.backend import register_impl
 from cuda.tile._numeric_semantics import RoundingMode as RMd
 
-# Type aliases for constants
-ConstInt = ct.Constant[int]
+from .cutile_constants import ConstInt
 
 # MXFP8 constants
 MXFP8_GROUP_SIZE = 32  # Number of elements per group

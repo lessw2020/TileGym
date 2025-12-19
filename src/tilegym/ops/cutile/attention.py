@@ -21,9 +21,7 @@ logger = get_logger(__name__)
 
 INV_LOG_2 = 1.0 / math.log(2)
 
-# Define type aliases for Constant integers and booleans
-ConstInt = ct.Constant[int]
-ConstBool = ct.Constant[bool]
+from .cutile_constants import ConstBool, ConstInt
 
 # --- FMHA Kernel Implementation ---
 @ct.kernel(occupancy=2)

@@ -9,14 +9,10 @@ import torch
 
 from tilegym.backend import register_impl
 
+from .cutile_constants import ConstBool, ConstFloat, ConstInt
 from .utils import next_power_of_2
 
 INV_LOG_2 = 1.0 / math.log(2)
-
-# Type aliases for constants
-ConstInt = ct.Constant[int]
-ConstBool = ct.Constant[bool]
-ConstFloat = ct.Constant[float]
 
 @ct.kernel(occupancy=4)
 def splitk_reduce_kernel(

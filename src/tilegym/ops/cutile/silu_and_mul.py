@@ -12,8 +12,7 @@ import torch
 from tilegym.backend import register_impl
 from cuda.tile._numeric_semantics import RoundingMode as RMd
 
-# Type aliases for constants
-ConstInt = ct.Constant[int]
+from .cutile_constants import ConstInt
 
 def ensure_contiguous(fn):
     @functools.wraps(fn)

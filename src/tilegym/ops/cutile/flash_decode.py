@@ -14,8 +14,7 @@ from tilegym.ops.cutile.splitk_reduce import splitk_reduce
 
 from .utils import next_power_of_2
 
-# Type aliases for constants
-ConstInt = ct.Constant[int]
+from .cutile_constants import ConstInt
 
 INV_LOG_2 = 1.0 / math.log(2)
 

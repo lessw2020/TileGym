@@ -8,9 +8,7 @@ import cuda.tile as ct
 import numpy as np
 import torch
 
-# Type aliases for constants
-ConstInt = ct.Constant[int]
-ConstBool = ct.Constant[bool]
+from .cutile_constants import ConstBool, ConstInt
 
 from .utils import next_power_of_2
 
