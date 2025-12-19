@@ -10,12 +10,17 @@ from tilegym.backend import set_backend
 from tilegym.ops import fmha_interface
 from .. import common
 
+FP8_DTYPE = getattr(torch, "float8_e4m3fn", None)
 
 def get_data(
     *shape, dtype, device, mean=0.0, normal_std=1.0,
 ):
-    if dtype == torch.float8_e5m2:
-        out = torch.empty(*shape, dtype=torch.float16, device=device).normal_(mean, normal_std).to(dtype)
+    if FP8_DTYPE is not None and dtype == FP8_DTYPE:
+        out = (
+            torch.empty(*shape, dtype=torch.float16, device=device)
+            .normal_(mean, normal_std)
+            .to(dtype)
+        )
     else:
         out = torch.empty(*shape, dtype=dtype, device=device).normal_(
             mean, normal_std
@@ -26,7 +31,7 @@ def get_data(
 class Test_FMHA(common.PyTestCase):
     @staticmethod
     def reference(q, k, v, scaling=None, attention_mask=None, is_causal=False):
-        if q.dtype == torch.float8_e5m2:
+        if FP8_DTYPE is not None and q.dtype == FP8_DTYPE:
             ref = torch.nn.functional.scaled_dot_product_attention(
                 q.float(),
                 k.float(),
@@ -44,18 +49,22 @@ class Test_FMHA(common.PyTestCase):
         return ref
 
     _backends = ["cutile"]  
+
+    # Only causal=True, and only BF16 + FP8(E4M3) as requested.
+    _cases = [
+        (1, 1, 9, 128, torch.bfloat16),
+        (2, 4, 128, 128, torch.bfloat16),
+        (2, 32, 4095, 128, torch.bfloat16),
+    ]
+    if FP8_DTYPE is not None:
+        _cases += [
+            (1, 32, 2047, 128, FP8_DTYPE),
+            (2, 32, 4095, 128, FP8_DTYPE),
+        ]
+
     @pytest.mark.parametrize(
-        "batch_size, num_heads, seq_len, head_dim, is_causal, dtype",
-        [
-            (1, 1, 9, 128, False, torch.bfloat16),
-            (1, 1, 9, 128, True, torch.bfloat16),
-            (2, 4, 128, 128, False, torch.bfloat16),
-            (2, 4, 1023, 128, True, torch.float16),
-            (1, 32, 2047, 128, True, torch.float16),
-            (2, 32, 4095, 128, True, torch.bfloat16),
-            (1, 32, 2047, 128, True, torch.float8_e5m2),
-            (2, 32, 4095, 128, True, torch.float8_e5m2),
-        ],
+        "batch_size, num_heads, seq_len, head_dim, dtype",
+        _cases,
     )
     @pytest.mark.parametrize("backend", _backends)
     def test_op(
@@ -64,7 +73,6 @@ class Test_FMHA(common.PyTestCase):
         num_heads,
         seq_len,
         head_dim,
-        is_causal,
         dtype,
         backend,
         arch,
@@ -89,7 +97,8 @@ class Test_FMHA(common.PyTestCase):
 
         # Calculate scaling factor
         sm_scale = 1.0 / math.sqrt(head_dim)
-        if dtype == torch.float8_e5m2:
+        is_causal = True
+        if FP8_DTYPE is not None and dtype == FP8_DTYPE:
             atol = 3
             rtol = 0
         else:

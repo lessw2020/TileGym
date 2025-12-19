@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import math
+import os
 import torch
 import triton
 
@@ -12,6 +13,7 @@ from tilegym.backend import is_backend_available, register_impl
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 BATCH, N_HEADS = 4, 32
+FP8_DTYPE = getattr(torch, "float8_e4m3fn", None)
 
 def reference_fmha(
     q: torch.Tensor,
@@ -38,7 +40,7 @@ ALL_BACKENDS = [
 
 def get_supported_backends(datatype):
     """Filter backends based on datatype support"""
-    if datatype == torch.float8_e5m2:
+    if FP8_DTYPE is not None and datatype == FP8_DTYPE:
         return [
             p for p in ALL_BACKENDS if p is not None and p[0] != "torch"
         ]  # Torch cannot support FP8
@@ -76,7 +78,9 @@ def create_benchmark_config(datatype, HEAD_DIM, mode, causal):
     )
 
 
-_dtypes = [torch.float16, torch.float8_e5m2]
+_dtypes = [torch.bfloat16]
+if FP8_DTYPE is not None:
+    _dtypes.append(FP8_DTYPE)
 
 
 @triton.testing.perf_report(
@@ -85,7 +89,7 @@ _dtypes = [torch.float16, torch.float8_e5m2]
         for datatype in _dtypes
         for HEAD_DIM in [128]
         for mode in ["fwd"]
-        for causal in [True, False]
+        for causal in [True]
     ]
 )
 def bench_fused_attention(
@@ -100,39 +104,39 @@ def bench_fused_attention(
     device=DEVICE,
 ):
     assert mode == "fwd"  # Only forward pass is supported in this benchmark
-    dtype = torch.float16
+    base_dtype = torch.float16 if (FP8_DTYPE is not None and datatype == FP8_DTYPE) else datatype
 
     # Create input tensors
     q = torch.randn(
         (BATCH, H, N_CTX, HEAD_DIM),
-        dtype=dtype,
+        dtype=base_dtype,
         device=device,
         requires_grad=True,
     )
     k = torch.randn(
         (BATCH, H, N_CTX, HEAD_DIM),
-        dtype=dtype,
+        dtype=base_dtype,
         device=device,
         requires_grad=True,
     )
     v = torch.randn(
         (BATCH, H, N_CTX, HEAD_DIM),
-        dtype=dtype,
+        dtype=base_dtype,
         device=device,
         requires_grad=True,
     )
 
-    if datatype == torch.float8_e5m2:
-        q = q.to(torch.float8_e5m2)
-        k = k.to(torch.float8_e5m2)
-        v = v.to(torch.float8_e5m2)
+    if FP8_DTYPE is not None and datatype == FP8_DTYPE:
+        q = q.to(FP8_DTYPE)
+        k = k.to(FP8_DTYPE)
+        v = v.to(FP8_DTYPE)
 
     sm_scale = 1.0 / math.sqrt(HEAD_DIM)  # Standard scaling factor
 
     fn = lambda: tilegym.ops.fmha(q, k, v, scaling=sm_scale, is_causal=causal, backend=backend)
 
-    if datatype != torch.float8_e5m2:
-        # torch doesn't support FP8 attention
+    if not (FP8_DTYPE is not None and datatype == FP8_DTYPE):
+        # torch doesn't support float8 attention
         ref = lambda: reference_fmha(q, k, v, scaling=sm_scale, is_causal=causal)
         torch.testing.assert_close(fn(), ref(), atol=1e-2, rtol=1e-2)
 
@@ -145,4 +149,7 @@ def bench_fused_attention(
 
 
 if __name__ == "__main__":
-    bench_fused_attention.run(print_data=True)
+    # Save plots into ./graphs to avoid cluttering the benchmark directory.
+    save_path = "./graphs"
+    os.makedirs(save_path, exist_ok=True)
+    bench_fused_attention.run(print_data=True, save_path=save_path)
