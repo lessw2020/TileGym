@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT
 
 
+import math
+
 import cuda.tile as ct
-import numpy as np
 import torch
 
 from tilegym.backend import register_impl
@@ -30,7 +31,9 @@ def softmax_kernel(
 
     for row_idx in range(pid, n_rows, num_programs):
         # Load the row tile using index-based access
-        row = ct.gather(input, (row_idx, offsets), check_bounds=True, padding_value=-np.inf)
+        row = ct.gather(
+            input, (row_idx, offsets), check_bounds=True, padding_value=-math.inf
+        )
         # Convert to float32 for computation
         row = ct.astype(row, torch.float32)
 
@@ -72,7 +75,7 @@ def softmax_kernel_tma(
         row = ct.load(input, index=(row_idx, 0), shape=(1, TILE_SIZE), padding_mode=ct.PaddingMode.NEG_INF)
 
         # Convert to float32 for computation
-        row = ct.astype(row, np.float32)
+        row = ct.astype(row, torch.float32)
 
         # Subtract maximum for numerical stability
         row_max = ct.max(row, 1, keepdims=True)
