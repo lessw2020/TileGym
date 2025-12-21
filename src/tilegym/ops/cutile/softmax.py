@@ -31,9 +31,7 @@ def softmax_kernel(
 
     for row_idx in range(pid, n_rows, num_programs):
         # Load the row tile using index-based access
-        row = ct.gather(
-            input, (row_idx, offsets), check_bounds=True, padding_value=-math.inf
-        )
+        row = ct.gather(input, (row_idx, offsets), check_bounds=True, padding_value=-math.inf)
         # Convert to float32 for computation
         row = ct.astype(row, torch.float32)
 
