@@ -33,7 +33,7 @@ def softmax_kernel(
         # Load the row tile using index-based access
         row = ct.gather(input, (row_idx, offsets), check_bounds=True, padding_value=-math.inf)
         # Convert to float32 for computation
-        row = ct.astype(row, torch.float32)
+        row = ct.astype(row, ct.float32)
 
         # Subtract maximum for numerical stability
         row_max = ct.max(row, 0, keepdims=True)
@@ -73,7 +73,7 @@ def softmax_kernel_tma(
         row = ct.load(input, index=(row_idx, 0), shape=(1, TILE_SIZE), padding_mode=ct.PaddingMode.NEG_INF)
 
         # Convert to float32 for computation
-        row = ct.astype(row, torch.float32)
+        row = ct.astype(row, ct.float32)
 
         # Subtract maximum for numerical stability
         row_max = ct.max(row, 1, keepdims=True)
